@@ -18,9 +18,13 @@ public class InfiniteScroll : UIBehaviour
 	public OnItemPositionChange onUpdateItem = new OnItemPositionChange();
 
 	[System.NonSerialized]
-	public LinkedList<RectTransform> itemList = new LinkedList<RectTransform>();
+	public RectTransform[] itemList;
+    private int listHead;
 
-	protected float diffPreFramePosition = 0;
+    private Vector3[] viewportCorners = new Vector3[4];
+    private Vector3[] itemCorners = new Vector3[4];
+
+    protected float diffPreFramePosition = 0;
 
 	protected int currentItemNo = 0;
 
@@ -59,75 +63,117 @@ public class InfiniteScroll : UIBehaviour
 
 	protected override void Start ()
 	{
-		var controllers = GetComponents<MonoBehaviour>()
-				.Where(item => item is IInfiniteScrollSetup)
-				.Select(item => item as IInfiniteScrollSetup)
-				.ToList();
+        var controllers = GetComponents<MonoBehaviour>()
+                .Where(item => item is IInfiniteScrollSetup)
+                .Select(item => item as IInfiniteScrollSetup)
+                .ToList();
 
-		// create items
+        // create items
 
-		var scrollRect = GetComponentInParent<ScrollRect>();
-		scrollRect.horizontal = direction == Direction.Horizontal;
-		scrollRect.vertical = direction == Direction.Vertical;
-		scrollRect.content = rectTransform;
+        var scrollRect = GetComponentInParent<ScrollRect>();
+        scrollRect.horizontal = direction == Direction.Horizontal;
+        scrollRect.vertical = direction == Direction.Vertical;
+        scrollRect.content = rectTransform;
 
-		itemPrototype.gameObject.SetActive(false);
-		
-		for(int i = 0; i < instantateItemCount; i++) {
-			var item = GameObject.Instantiate(itemPrototype) as RectTransform;
-			item.SetParent(transform, false);
-			item.name = i.ToString();
-			item.anchoredPosition = direction == Direction.Vertical ? new Vector2(0, -itemScale * i) : new Vector2(itemScale * i, 0);
-			itemList.AddLast(item);
+        itemPrototype.gameObject.SetActive(false);
 
-			item.gameObject.SetActive(true);
+        if (direction == Direction.Horizontal)
+        {
+            instantateItemCount = (int)((rectTransform.rect.width + itemPrototype.rect.width - 1) / itemPrototype.rect.width) + 1;
+        }
+        else
+        {
+            instantateItemCount = (int)((rectTransform.rect.height + itemPrototype.rect.height - 1) / itemPrototype.rect.height) + 1;
+        }
 
-			foreach(var controller in controllers) {
-				controller.OnUpdateItem(i, item.gameObject);
-			}
-		}
+        itemList = new RectTransform[instantateItemCount];
+        listHead = 0;
 
-		foreach(var controller in controllers){
-			controller.OnPostSetupItems();
-		}
-	}
+        for (int i = 0; i < instantateItemCount; i++)
+        {
+            var item = GameObject.Instantiate(itemPrototype) as RectTransform;
+            item.SetParent(transform, false);
+            item.name = i.ToString();
+            item.anchoredPosition = direction == Direction.Vertical ? new Vector2(0, -itemScale * i) : new Vector2(itemScale * i, 0);
+            itemList[i] = item;
 
-	void Update()
-	{
-		if (itemList.First == null) {
-			return;
-		}
+            item.gameObject.SetActive(true);
 
-		while(anchoredPosition - diffPreFramePosition  < -itemScale * 2) {
-			diffPreFramePosition -= itemScale;
+            foreach (var controller in controllers)
+            {
+                controller.OnUpdateItem(i, item.gameObject);
+            }
+        }
 
-			var item = itemList.First.Value;
-			itemList.RemoveFirst();
-			itemList.AddLast(item);
+        foreach (var controller in controllers)
+        {
+            controller.OnPostSetupItems();
+        }
+    }
 
-			var pos = itemScale * instantateItemCount + itemScale * currentItemNo;
-			item.anchoredPosition = (direction == Direction.Vertical) ? new Vector2(0, -pos) : new Vector2(pos, 0);
+    void Update()
+    {
+        if (rectTransform.hasChanged)
+        {
+            var itemCount = itemList.Length;
+            if (itemCount > 0)
+            {
+                var viewPort = rectTransform.GetComponentInParent<ScrollRect>().viewport;
+                if (viewPort != null)
+                {
+                    viewPort.GetWorldCorners(viewportCorners);
 
-			onUpdateItem.Invoke(currentItemNo + instantateItemCount, item.gameObject);
+                    bool horizontal = direction == Direction.Horizontal;
+                    var offset = (horizontal ? new Vector2(itemScale, 0) : new Vector2(0, -itemScale));
+                    while (true)
+                    {
+                        var item = itemList[listHead];
+                        item.GetWorldCorners(itemCorners);
+                        // Item's bottom is above the viewport's top
+                        if ((!horizontal && itemCorners[0].y > viewportCorners[1].y) ||
+                            (horizontal && itemCorners[3].x < viewportCorners[0].x))
+                        {
+                            var sibling = itemList[(listHead + itemCount - 1) % itemCount];
+                            item.anchoredPosition = sibling.anchoredPosition + offset;
+                            listHead = (listHead + 1) % itemCount;
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
 
-			currentItemNo++;
-		}
+                    while (true)
+                    {
+                        var listTail = (listHead + itemCount - 1) % itemCount;
 
-		while(anchoredPosition - diffPreFramePosition > 0) {
-			diffPreFramePosition += itemScale;
+                        var item = itemList[listTail];
+                        item.GetWorldCorners(itemCorners);
+                        // Item's top is below the viewport's bottom
+                        if ((!horizontal && itemCorners[1].y < viewportCorners[0].y) ||
+                            (horizontal && itemCorners[0].x > viewportCorners[3].x))
+                        {
+                            var sibling = itemList[listHead];
+                            item.anchoredPosition = sibling.anchoredPosition - offset;
+                            listHead = listTail;
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            rectTransform.hasChanged = false;
+        }
+    }
 
-			var item = itemList.Last.Value;
-			itemList.RemoveLast();
-			itemList.AddFirst(item);
+    [ContextMenu("Reset")]
+    protected override void Reset()
+    {
+        rectTransform.GetComponentInParent<ScrollRect>().normalizedPosition = Vector2.zero;
+    }
 
-			currentItemNo--;
-
-			var pos = itemScale * currentItemNo;
-			item.anchoredPosition = (direction == Direction.Vertical) ? new Vector2(0, -pos): new Vector2(pos, 0);
-			onUpdateItem.Invoke(currentItemNo, item.gameObject);
-		}
-	}
-
-	[System.Serializable]
+    [System.Serializable]
 	public class OnItemPositionChange : UnityEngine.Events.UnityEvent<int, GameObject> {}
 }
